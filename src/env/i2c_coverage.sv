@@ -100,9 +100,9 @@ class i2c_coverage extends uvm_subscriber #(i2c_transaction);
 
     cp_data_size: coverpoint sampled_credit_data_size {
       bins single = {1};
-      bins small  = {[2:4]};
-      bins medium = {[5:16]};
-      bins large  = {[17:128]};
+      bins small_payload  = {[2:4]};
+      bins medium_payload = {[5:16]};
+      bins large_payload  = {[17:128]};
     }
 
     cross_frame_state: cross cp_frame_type, cp_credit_state;

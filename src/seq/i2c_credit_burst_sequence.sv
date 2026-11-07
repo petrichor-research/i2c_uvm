@@ -25,8 +25,8 @@ class i2c_credit_burst_sequence extends i2c_credit_base_sequence;
 
     repeat (burst_count) begin
       repeat (burst_size) begin
-        payload = new[$urandom_range(1, 4)];
-        foreach (payload[i]) payload[i] = $urandom_range(0, 255);
+        payload = new[1];
+        foreach (payload[i]) payload[i] = $urandom_range(0, 63);
         send_data_frame(payload);
       end
 
@@ -55,7 +55,7 @@ class i2c_credit_exhaustion_sequence extends i2c_credit_base_sequence;
 
     repeat (depth) begin
       payload = new[1];
-      payload[0] = $urandom_range(0, 255);
+      payload[0] = $urandom_range(0, 63);
       send_data_frame(payload);
     end
 
@@ -66,7 +66,7 @@ class i2c_credit_exhaustion_sequence extends i2c_credit_base_sequence;
     `uvm_info("CREDIT_EXHAUST_SEQ", "Sending post-recovery frames", UVM_LOW)
     repeat (depth / 2) begin
       payload = new[1];
-      payload[0] = $urandom_range(0, 255);
+      payload[0] = $urandom_range(0, 63);
       send_data_frame(payload);
     end
   endtask

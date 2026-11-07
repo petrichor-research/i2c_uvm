@@ -13,6 +13,7 @@ class i2c_transaction extends uvm_sequence_item;
   // Response / Status Fields
   i2c_status_e         status;
   bit                  nack_received;
+  int unsigned         accepted_data_bytes;
 
   // ---- Credit-Layer Metadata ----
   rand i2c_credit_frame_e frame_type;
@@ -32,6 +33,7 @@ class i2c_transaction extends uvm_sequence_item;
     `uvm_field_int(repeated_start, UVM_ALL_ON)
     `uvm_field_enum(i2c_status_e, status, UVM_ALL_ON)
     `uvm_field_int(nack_received, UVM_ALL_ON)
+    `uvm_field_int(accepted_data_bytes, UVM_ALL_ON)
     `uvm_field_enum(i2c_credit_frame_e, frame_type, UVM_ALL_ON)
     `uvm_field_int(credit_count,            UVM_ALL_ON)
     `uvm_field_int(frame_id,                UVM_ALL_ON)
@@ -62,6 +64,7 @@ class i2c_transaction extends uvm_sequence_item;
     frame_id = 0;
     is_credit_return = 0;
     is_credit_init = 0;
+    accepted_data_bytes = 0;
   endfunction
 
   virtual function string convert2string();
@@ -81,6 +84,7 @@ class i2c_transaction extends uvm_sequence_item;
       if (data.size() % 16 != 0) s = {s, "\n"};
     end
     s = {s, $sformatf(" Status       : %s\n", status.name())};
+    s = {s, $sformatf(" ACKed Bytes  : %0d\n", accepted_data_bytes)};
     if (frame_type != I2C_CREDIT_FRAME_DATA) begin
       s = {s, $sformatf(" Credit Frame : %s\n", frame_type.name())};
       s = {s, $sformatf(" Credit Count : %0d\n", credit_count)};
@@ -92,12 +96,59 @@ class i2c_transaction extends uvm_sequence_item;
     return s;
   endfunction
 
-  function void encode_credit_header();
+  // The retained wire convention carries a type tag in every byte. DATA has
+  // six payload bits per byte; it does not gain an extra header byte.
+  function bit encode_credit_header();
     bit [7:0] header;
+    if (frame_type == I2C_CREDIT_FRAME_DATA) begin
+      if (data.size() == 0) begin
+        `uvm_error("CREDIT_ENCODE", "DATA requires at least one six-bit payload byte")
+        return 0;
+      end
+      foreach (data[i]) begin
+        if (data[i][I2C_CREDIT_FRAME_TYPE_MSB:I2C_CREDIT_FRAME_TYPE_LSB] !=
+            I2C_CREDIT_FRAME_DATA) begin
+          `uvm_error("CREDIT_ENCODE", $sformatf(
+            "DATA payload[%0d]=0x%02x is outside the encodable range 0..63", i, data[i]))
+          return 0;
+        end
+      end
+      // Valid DATA already has tag 00. Preserve all payload bits and bytes.
+      is_credit_init = 0;
+      is_credit_return = 0;
+      return 1;
+    end
+
+    // This six-bit wire field is distinct from event-channel counts, whose
+    // separately validated range extends to I2C_CREDIT_MAX_DEPTH.
+    if (credit_count == 0 || credit_count > 63 || data.size() > 1) begin
+      `uvm_error("CREDIT_ENCODE",
+        "Control encoding requires one byte and an explicit count in 1..63")
+      return 0;
+    end
     header[I2C_CREDIT_FRAME_TYPE_MSB:I2C_CREDIT_FRAME_TYPE_LSB] = frame_type;
     header[I2C_CREDIT_PAYLOAD_MSB:I2C_CREDIT_PAYLOAD_LSB] = credit_count[5:0];
     if (data.size() == 0) data = new[1];
     data[0] = header;
+    is_credit_init = (frame_type == I2C_CREDIT_FRAME_INIT);
+    is_credit_return = (frame_type == I2C_CREDIT_FRAME_RETURN);
+    return 1;
+  endfunction
+
+  // Callers receiving an already encoded transaction can validate the whole
+  // wire image without re-encoding or silently masking an invalid DATA byte.
+  function bit valid_credit_encoding();
+    if (data.size() == 0) return 0;
+    if (frame_type == I2C_CREDIT_FRAME_DATA) begin
+      foreach (data[i]) begin
+        if (data[i][I2C_CREDIT_FRAME_TYPE_MSB:I2C_CREDIT_FRAME_TYPE_LSB] !=
+            I2C_CREDIT_FRAME_DATA) return 0;
+      end
+      return 1;
+    end
+    return data.size() == 1 && credit_count > 0 && credit_count <= 63 &&
+           data[0][I2C_CREDIT_FRAME_TYPE_MSB:I2C_CREDIT_FRAME_TYPE_LSB] == frame_type &&
+           data[0][I2C_CREDIT_PAYLOAD_MSB:I2C_CREDIT_PAYLOAD_LSB] == credit_count;
   endfunction
 
   function void decode_credit_header();

@@ -119,24 +119,34 @@ regr_paper: comp
 	}' regression_raw.csv
 	@echo "Detailed metrics logged to: regression_raw.csv"
 
-# Credit-Based Test Targets (pass +CREDIT_MODE to select credit slave DUT)
+# Credit runner: explicit, replayable seeds; strict oracle; retained raw logs.
+PYTHON ?= python3
+CREDIT_ITERATIONS ?= 15
+CREDIT_SEED_START ?= 1
+CREDIT_TIMEOUT_S ?= 300
+CREDIT_LOG_DIR ?= credit_regression
+CREDIT_RUNNER = $(PYTHON) run_credit_regression.py --sim-command "$(SIM)" \
+                --seed-start $(CREDIT_SEED_START) --timeout $(CREDIT_TIMEOUT_S) \
+                --output-dir "$(CREDIT_LOG_DIR)"
+
+# Single-seed credit smoke tests use the same strict result oracle.
 run_credit_sanity: comp
-	$(SIM) +UVM_TESTNAME=i2c_credit_sanity_test +CREDIT_MODE -l run_credit_sanity.log
+	$(CREDIT_RUNNER) --iterations 1 --tests i2c_credit_sanity_test
 
 run_credit_exhaustion: comp
-	$(SIM) +UVM_TESTNAME=i2c_credit_exhaustion_test +CREDIT_MODE -l run_credit_exhaustion.log
+	$(CREDIT_RUNNER) --iterations 1 --tests i2c_credit_exhaustion_test
 
 run_credit_burst: comp
-	$(SIM) +UVM_TESTNAME=i2c_credit_burst_test +CREDIT_MODE -l run_credit_burst.log
+	$(CREDIT_RUNNER) --iterations 1 --tests i2c_credit_burst_test
 
 run_credit_error: comp
-	$(SIM) +UVM_TESTNAME=i2c_credit_error_test +CREDIT_MODE -l run_credit_error.log
+	$(CREDIT_RUNNER) --iterations 1 --tests i2c_credit_error_test
 
 run_credit_dual_role: comp
-	$(SIM) +UVM_TESTNAME=i2c_credit_dual_role_test +CREDIT_MODE -l run_credit_dual_role.log
+	$(CREDIT_RUNNER) --iterations 1 --tests i2c_credit_dual_role_test
 
 run_credit_random: comp
-	$(SIM) +UVM_TESTNAME=i2c_credit_random_test +CREDIT_MODE -l run_credit_random.log
+	$(CREDIT_RUNNER) --iterations 1 --tests i2c_credit_random_test
 
 # Credit Regression
 CREDIT_TEST_LIST = i2c_credit_sanity_test i2c_credit_exhaustion_test i2c_credit_burst_test \
@@ -146,11 +156,7 @@ regr_credit: comp
 	@echo "======================================================================"
 	@echo "           CREDIT-BASED I2C REGRESSION SUITE EXECUTION               "
 	@echo "======================================================================"
-	@for test in $(CREDIT_TEST_LIST); do \
-		echo "Running $$test..."; \
-		$(SIM) +UVM_TESTNAME=$$test +CREDIT_MODE -l run_$${test}.log -cm_name $$test; \
-	done
-	@echo "Credit Regression Complete."
+	$(CREDIT_RUNNER) --iterations $(CREDIT_ITERATIONS) --tests $(CREDIT_TEST_LIST)
 
 # Full Regression (Original + Credit)
 FULL_TEST_LIST = $(TEST_LIST) $(CREDIT_TEST_LIST)
@@ -163,10 +169,7 @@ regr_full: comp
 		echo "Running $$test..."; \
 		$(SIM) +UVM_TESTNAME=$$test -l run_$${test}.log -cm_name $$test; \
 	done
-	@for test in $(CREDIT_TEST_LIST); do \
-		echo "Running $$test (credit mode)..."; \
-		$(SIM) +UVM_TESTNAME=$$test +CREDIT_MODE -l run_$${test}.log -cm_name $$test; \
-	done
+	$(CREDIT_RUNNER) --iterations $(CREDIT_ITERATIONS) --tests $(CREDIT_TEST_LIST)
 	@echo "Full Regression Complete."
 
 # Generate Coverage Report (URG)

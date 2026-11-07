@@ -23,6 +23,8 @@ class i2c_scoreboard extends uvm_scoreboard;
   int unsigned credit_data_transactions;
   int unsigned credit_init_frames;
   int unsigned credit_return_frames;
+  // Legacy field name: this is a raw frame-count difference, not a credit
+  // balance (INIT/RETURN payload counts and ACKed bytes have different units).
   int credit_balance_delta;
   
   uvm_event transaction_received_event;
@@ -154,7 +156,7 @@ class i2c_scoreboard extends uvm_scoreboard;
     if (cfg.credit_mode_enable) begin
       credit_balance_delta = credit_init_frames + credit_return_frames - credit_data_transactions;
       `uvm_info("SCB", $sformatf(
-        "Credit balance: init=%0d data=%0d returns=%0d delta=%0d",
+        "Observed wire frames: init=%0d data=%0d returns=%0d raw_frame_delta=%0d (not a credit balance)",
         credit_init_frames, credit_data_transactions, credit_return_frames, credit_balance_delta), UVM_LOW)
     end
   endfunction
@@ -163,7 +165,7 @@ class i2c_scoreboard extends uvm_scoreboard;
     real match_rate;
     super.report_phase(phase);
     
-    match_rate = (total_compared > 0) ? (100.0 * total_matched / total_compared) : 100.0;
+    match_rate = (total_compared > 0) ? (100.0 * total_matched / total_compared) : 0.0;
     
     `uvm_info("SCB", "╔════════════════════════════════════╗", UVM_NONE)
     `uvm_info("SCB", "║    SCOREBOARD STATISTICS           ║", UVM_NONE)
@@ -172,13 +174,16 @@ class i2c_scoreboard extends uvm_scoreboard;
     `uvm_info("SCB", $sformatf("║ Compared:    %8d             ║", total_compared), UVM_NONE)
     `uvm_info("SCB", $sformatf("║ Matched:     %8d             ║", total_matched), UVM_NONE)
     `uvm_info("SCB", $sformatf("║ Mismatched:  %8d             ║", total_mismatched), UVM_NONE)
-    `uvm_info("SCB", $sformatf("║ Match Rate:  %7.1f%%            ║", match_rate), UVM_NONE)
+    if (total_compared > 0)
+      `uvm_info("SCB", $sformatf("║ Match Rate:  %7.1f%%            ║", match_rate), UVM_NONE)
+    else
+      `uvm_info("SCB", "║ Match Rate: N/A (no comparisons)    ║", UVM_NONE)
     if (cfg.credit_mode_enable) begin
       `uvm_info("SCB", "╠════════════════════════════════════╣", UVM_NONE)
       `uvm_info("SCB", $sformatf("║ Credit Data: %8d             ║", credit_data_transactions), UVM_NONE)
       `uvm_info("SCB", $sformatf("║ Credit Init: %8d             ║", credit_init_frames), UVM_NONE)
       `uvm_info("SCB", $sformatf("║ Credit Ret:  %8d             ║", credit_return_frames), UVM_NONE)
-      `uvm_info("SCB", $sformatf("║ Balance:     %8d             ║", credit_balance_delta), UVM_NONE)
+      `uvm_info("SCB", $sformatf("║ Frame Delta: %8d (not budget)║", credit_balance_delta), UVM_NONE)
     end
     `uvm_info("SCB", "╚════════════════════════════════════╝", UVM_NONE)
   endfunction

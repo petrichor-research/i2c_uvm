@@ -102,9 +102,10 @@ module tb_top;
   assign intf.scl = (credit_mode_active && cslv_scl_oe && !cslv_scl_o) ? 1'b0 : 1'bz;
   assign intf.sda = (credit_mode_active && cslv_sda_oe && !cslv_sda_o) ? 1'b0 : 1'bz;
 
-  // Master Drivers (always active)
-  assign intf.scl = (mst_scl_oe && !mst_scl_o) ? 1'b0 : 1'bz;
-  assign intf.sda = (mst_sda_oe && !mst_sda_o) ? 1'b0 : 1'bz;
+  // The auxiliary RTL master is excluded from credit-mode runs so that the
+  // credit evidence has one controller on the bus.
+  assign intf.scl = (!credit_mode_active && mst_scl_oe && !mst_scl_o) ? 1'b0 : 1'bz;
+  assign intf.sda = (!credit_mode_active && mst_sda_oe && !mst_sda_o) ? 1'b0 : 1'bz;
 
   // Clock Generation
   initial begin
@@ -132,26 +133,30 @@ module tb_top;
     
     #10000000;
     
-    $display("TB_TOP: Triggering RTL Master Sequence...");
+    if (credit_mode_active) begin
+      $display("TB_TOP: Auxiliary RTL master disabled in credit mode.");
+    end else begin
+      $display("TB_TOP: Triggering RTL Master Sequence...");
 
-    repeat(100) begin
-      @(posedge clk);
-      mst_req = 1;
-      mst_rw = $random % 2;
-      mst_data = $random;
-      
-      case ($random % 20)
-        0: mst_addr = ~DUT_SLAVE_ADDR;
-        1: mst_addr = 7'h00;
-        2: mst_addr = 7'h7F;
-        3: mst_addr = $random;
-        default: mst_addr = DUT_SLAVE_ADDR;
-      endcase
-      
-      #5000; 
-      mst_req = 0;
-      @(posedge mst_done);
-      #50000;
+      repeat(100) begin
+        @(posedge clk);
+        mst_req = 1;
+        mst_rw = $random % 2;
+        mst_data = $random;
+
+        case ($random % 20)
+          0: mst_addr = ~DUT_SLAVE_ADDR;
+          1: mst_addr = 7'h00;
+          2: mst_addr = 7'h7F;
+          3: mst_addr = $random;
+          default: mst_addr = DUT_SLAVE_ADDR;
+        endcase
+
+        #5000;
+        mst_req = 0;
+        @(posedge mst_done);
+        #50000;
+      end
     end
   end
 
@@ -162,10 +167,13 @@ module tb_top;
     run_test();
   end
 
-  // Waveform Dump (VCS)
+  // Optional vendor waveform dump. Enable +define+I2C_ENABLE_FSDB and link
+  // the vendor dumper when compiling with a simulator that provides it.
+`ifdef I2C_ENABLE_FSDB
   initial begin
     $fsdbDumpfile("waves.fsdb");
     $fsdbDumpvars(0, tb_top);
   end
+`endif
 
 endmodule

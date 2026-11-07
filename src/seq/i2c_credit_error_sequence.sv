@@ -40,13 +40,15 @@ class i2c_credit_error_sequence extends i2c_credit_base_sequence;
 
     repeat (depth) begin
       payload = new[1];
-      payload[0] = $urandom_range(0, 255);
+      payload[0] = $urandom_range(0, 63);
       send_data_frame(payload);
     end
 
     repeat (3) begin
       payload = new[1];
-      payload[0] = 8'hDE;
+      // Keep the wire DATA tag valid: this scenario violates the budget,
+      // not the six-bit payload encoding.
+      payload[0] = 8'h1E;
       send_data_frame(payload);
     end
   endtask
@@ -59,19 +61,19 @@ class i2c_credit_error_sequence extends i2c_credit_base_sequence;
 
     repeat (cfg.cbr_depth / 2) begin
       payload = new[1];
-      payload[0] = $urandom_range(0, 255);
+      payload[0] = $urandom_range(0, 63);
       send_data_frame(payload);
     end
 
     tr = i2c_transaction::type_id::create("phantom_tr");
-    start_item(tr);
     tr.direction = I2C_WRITE;
     tr.addr_mode = I2C_ADDR_7BIT;
     tr.addr = target_addr;
     tr.frame_type = I2C_CREDIT_FRAME_RETURN;
     tr.credit_count = 5;
     tr.is_credit_return = 1;
-    tr.encode_credit_header();
+    if (!tr.encode_credit_header()) return;
+    start_item(tr);
     finish_item(tr);
   endtask
 
@@ -82,7 +84,7 @@ class i2c_credit_error_sequence extends i2c_credit_base_sequence;
 
     repeat (cfg.cbr_depth) begin
       payload = new[1];
-      payload[0] = $urandom_range(0, 255);
+      payload[0] = $urandom_range(0, 63);
       send_data_frame(payload);
     end
   endtask

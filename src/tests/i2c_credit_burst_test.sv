@@ -10,30 +10,33 @@ class i2c_credit_burst_test extends i2c_credit_test_base;
 
   virtual function void configure_credit_params();
     super.configure_credit_params();
-    cfg.cbr_depth = 16;
+    cfg.cbr_depth = I2C_CREDIT_DEFAULT_DEPTH;
     cfg.cbr_pipe_delay = 2;
   endfunction
 
   task run_phase(uvm_phase phase);
     i2c_credit_burst_sequence burst_seq;
+    bit completed;
 
     phase.raise_objection(this);
 
-    `uvm_info("TEST", ">>> Credit Burst Test: large burst with varying FIFO depths", UVM_LOW)
+    `uvm_info("TEST", ">>> Credit Burst Test: multiple groups within one eight-credit budget; no RETURN recovery claimed", UVM_LOW)
 
     #50us;
 
     burst_seq = i2c_credit_burst_sequence::type_id::create("burst_seq");
+    burst_seq.cfg = cfg;
     burst_seq.target_addr = cfg.slave_addr;
     if (!burst_seq.randomize() with {
-      burst_count == 5;
-      burst_size inside {[3:8]};
+      burst_count inside {[2:4]};
+      burst_size inside {[1:4]};
+      burst_count * burst_size <= cfg.cbr_depth;
     }) `uvm_fatal("TEST", "Randomization failed")
 
-    burst_seq.start(env.agent.cbt_sequencer);
-
-    #(cfg.cbr_pipe_delay * cfg.cbr_depth * cfg.t_low_ns * 2ns);
-    #200us;
+    expected_accepted_bytes = burst_seq.burst_count * burst_seq.burst_size;
+    expected_bus_transactions = expected_accepted_bytes;
+    start_credit_sequence_bounded(burst_seq, completed);
+    scenario_completed = completed;
 
     `uvm_info("TEST", ">>> Credit Burst Test Complete", UVM_LOW)
     phase.drop_objection(this);

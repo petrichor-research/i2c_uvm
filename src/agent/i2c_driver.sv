@@ -7,6 +7,10 @@ class i2c_driver extends uvm_driver #(i2c_transaction);
   virtual i2c_if vif;
   i2c_config     cfg;
   time           idle_poll_time = 1000ns; // prevents busy-spins when no items are available
+  bit            master_restart_pending = 0;
+  bit            slave_restart_pending = 0;
+  int unsigned   master_restart_epoch = 0;
+  int unsigned   slave_restart_epoch = 0;
 
   function new(string name, uvm_component parent);
     super.new(name, parent);
@@ -50,12 +54,19 @@ class i2c_driver extends uvm_driver #(i2c_transaction);
     // Enhanced Logging: Print full transaction details
     `uvm_info("DRV", $sformatf("Master Driving: %s", tr.convert2string()), UVM_LOW)
     
-    // 1. Start Condition
-    send_start();
+    // A preceding transfer may already have emitted the repeated START.
+    // Its address follows directly; emitting another START loses that phase.
+    if (master_restart_pending &&
+        master_restart_epoch == i2c_event_pool::reset_epoch)
+      master_restart_pending = 0;
+    else
+      send_start();
     
     // 2. Address + R/W
     send_byte({tr.addr[6:0], tr.direction}); 
-    wait_ack(tr.status);
+    tr.accepted_data_bytes = 0;
+    tr.nack_received = 0;
+    wait_ack(tr.status, 1'b1);
 
     if (tr.status == I2C_STATUS_ADDR_NACK) begin
        `uvm_info("DRV", "Address NACK received, stopping", UVM_LOW)
@@ -67,8 +78,12 @@ class i2c_driver extends uvm_driver #(i2c_transaction);
     if (tr.direction == I2C_WRITE) begin
        foreach(tr.data[i]) begin
          send_byte(tr.data[i]);
-         wait_ack(tr.status);
-         if (tr.status == I2C_STATUS_DATA_NACK) break;
+         wait_ack(tr.status, 1'b0);
+         if (tr.status == I2C_STATUS_DATA_NACK) begin
+           tr.nack_received = 1;
+           break;
+         end
+         tr.accepted_data_bytes++;
        end
     end else begin
        foreach(tr.data[i]) begin
@@ -90,44 +105,145 @@ class i2c_driver extends uvm_driver #(i2c_transaction);
   // SLAVE MODE TASKS
   // -----------------------------------------------------------------------
   task wait_for_request();
-      logic [7:0] addr_byte;
-      logic [7:0] data_byte;
-      i2c_direction_e dir;
-      bit [6:0] rcv_addr;
-      
-      // 1. Detect Start Condition
-      wait(vif.sda == 0 && vif.scl == 1);
-      
-      // 2. Read Address (8 bits) - PASSIVE mode (Slave)
-      slave_read_byte(addr_byte);
-      
-      rcv_addr = addr_byte[7:1];
-      dir      = i2c_direction_e'(addr_byte[0]);
-      
-      // 3. Send ACK
-      slave_send_ack();
-      
-      // 4. Data Phase
-      if (dir == I2C_WRITE) begin
-          // Master Write -> Slave Read
-          slave_read_byte(data_byte);
-          slave_send_ack();
-          
-          `uvm_info("DRV_SLV", $sformatf("\n--------------------------------------------------\n SLAVE RECEIVED TRANSACTION\n Address      : 0x%0x (7-bit)\n Direction    : MASTER_WRITE\n Data Payload : 0x%02x\n Status       : ACK_SENT\n--------------------------------------------------", rcv_addr, data_byte), UVM_LOW)
+    i2c_transaction tr;
+    bit serviced;
+    wait_for_request_result(tr, serviced);
+  endtask
 
-      end else begin
-          // Master Read -> Slave Write
-          // Placeholder: Drive 0xFF
-          slave_send_byte(8'hFF);
-          // Master sends NACK/ACK. 
-          slave_wait_ack_or_nack();
-          
-          `uvm_info("DRV_SLV", $sformatf("\n--------------------------------------------------\n SLAVE SERVICED TRANSACTION\n Address      : 0x%0x (7-bit)\n Direction    : MASTER_READ\n Data Driven  : 0xFF\n Status       : COMPLETED\n--------------------------------------------------", rcv_addr), UVM_LOW)
+  // A cancelled listen is not a received transaction.  The result contains
+  // only complete byte/ACK phases and is returned at STOP or repeated START.
+  task wait_for_request_result(output i2c_transaction tr, output bit serviced);
+    i2c_transaction captured_tr;
+    logic [7:0] addr_byte;
+    logic [7:0] data_byte;
+    logic ack_bit;
+    bit acked;
+    bit address_complete;
+    bit address_matched;
+    bit boundary_seen;
+    bit restart_seen;
+    bit cancelled;
+    int unsigned listen_epoch;
+
+    tr = null;
+    serviced = 0;
+    address_complete = 0;
+    address_matched = 0;
+    boundary_seen = 0;
+    restart_seen = 0;
+    cancelled = 0;
+    listen_epoch = i2c_event_pool::reset_epoch;
+    if (slave_restart_epoch != listen_epoch)
+      slave_restart_pending = 0;
+    vif.scl_drive <= 1'b1;
+    vif.sda_drive <= 1'b1;
+    if (cfg.is_master) begin
+      slave_restart_pending = 0;
+      return;
+    end
+
+    fork
+      begin : receive_request
+        if (!slave_restart_pending) begin
+          forever begin
+            @(negedge vif.sda);
+            if (vif.scl === 1'b1) break;
+          end
+        end
+        slave_restart_pending = 0;
+        captured_tr = i2c_transaction::type_id::create("slave_received_tr");
+        captured_tr.data = new[0];
+        captured_tr.addr_mode = I2C_ADDR_7BIT;
+
+        fork
+          begin : watch_boundary
+            forever begin
+              @(vif.sda);
+              if (vif.scl === 1'b1 &&
+                  (vif.sda === 1'b0 || vif.sda === 1'b1)) begin
+                boundary_seen = 1;
+                restart_seen = (vif.sda === 1'b0);
+                break;
+              end
+            end
+          end
+          begin : receive_bytes
+            slave_read_byte(addr_byte);
+            captured_tr.addr = addr_byte[7:1];
+            captured_tr.direction = i2c_direction_e'(addr_byte[0]);
+            address_matched = !$isunknown(addr_byte) &&
+                              addr_byte[7:1] == cfg.slave_addr;
+            if (address_matched)
+              slave_send_ack_result(acked);
+            else begin
+              slave_sample_ack(ack_bit);
+              acked = 0;
+            end
+            address_complete = 1;
+            captured_tr.status = acked ? I2C_STATUS_OK : I2C_STATUS_ADDR_NACK;
+
+            if (address_matched && acked) begin
+              forever begin
+                if (captured_tr.direction == I2C_WRITE) begin
+                  slave_read_byte(data_byte);
+                  if ($isunknown(data_byte)) begin
+                    // Do not acknowledge an indeterminate byte as accepted.
+                    slave_sample_ack(ack_bit);
+                    captured_tr.status = I2C_STATUS_ERROR;
+                    break;
+                  end
+                  slave_send_ack_result(acked);
+                  ack_bit = !acked;
+                end else begin
+                  // The base behavioral responder retains its 0xFF value.
+                  data_byte = 8'hFF;
+                  slave_send_byte(data_byte);
+                  slave_sample_ack(ack_bit);
+                end
+
+                captured_tr.data = new[captured_tr.data.size() + 1](captured_tr.data);
+                captured_tr.data[captured_tr.data.size()-1] = data_byte;
+                captured_tr.nack_received = (ack_bit !== 1'b0);
+                if (captured_tr.direction == I2C_WRITE && ack_bit === 1'b0)
+                  captured_tr.accepted_data_bytes++;
+                if (ack_bit !== 1'b0) begin
+                  if (captured_tr.direction == I2C_WRITE)
+                    captured_tr.status = I2C_STATUS_DATA_NACK;
+                  break;
+                end
+              end
+            end
+            // Byte acquisition ending (including NACK) is not a bus boundary.
+            wait(boundary_seen);
+          end
+        join_any
+        disable fork;
       end
-      
-      // 5. Wait for Stop (SDA rising while SCL high)
-      wait(vif.sda == 1 && vif.scl == 1);
-      
+      begin : cancel_listen
+        wait(cfg.is_master || i2c_event_pool::reset_epoch != listen_epoch);
+        cancelled = 1;
+      end
+    join_any
+    disable fork;
+
+    vif.scl_drive <= 1'b1;
+    vif.sda_drive <= 1'b1;
+    if (cancelled || cfg.is_master ||
+        i2c_event_pool::reset_epoch != listen_epoch) begin
+      slave_restart_pending = 0;
+      return;
+    end
+
+    slave_restart_pending = restart_seen;
+    slave_restart_epoch = listen_epoch;
+    if (address_complete && address_matched && boundary_seen) begin
+      captured_tr.repeated_start = restart_seen;
+      if (captured_tr.direction == I2C_WRITE && captured_tr.data.size() > 0)
+        captured_tr.decode_credit_header();
+      tr = captured_tr;
+      serviced = 1;
+      `uvm_info("DRV_SLV", $sformatf("Slave serviced: %s", tr.convert2string()), UVM_LOW)
+    end
   endtask
 
 
@@ -143,6 +259,7 @@ class i2c_driver extends uvm_driver #(i2c_transaction);
   endtask
 
   task send_start();
+    master_restart_pending = 0;
     vif.sda_drive <= 1'b1;
     vif.scl_drive <= 1'b1;
     wait_half_period(1); 
@@ -155,6 +272,7 @@ class i2c_driver extends uvm_driver #(i2c_transaction);
   endtask
 
   task send_stop();
+    master_restart_pending = 0;
     vif.scl_drive <= 1'b0;
     vif.sda_drive <= 1'b0;
     wait_half_period(0);
@@ -180,6 +298,8 @@ class i2c_driver extends uvm_driver #(i2c_transaction);
     
     vif.scl_drive <= 1'b0;
     wait_half_period(0);
+    master_restart_pending = 1;
+    master_restart_epoch = i2c_event_pool::reset_epoch;
   endtask
 
   task send_byte(input bit [7:0] data);
@@ -209,7 +329,7 @@ class i2c_driver extends uvm_driver #(i2c_transaction);
     end
   endtask
   
-  task wait_ack(output i2c_status_e status);
+  task wait_ack(output i2c_status_e status, input bit address_phase);
     vif.sda_drive <= 1'b1;
     wait_half_period(0);
     
@@ -220,7 +340,7 @@ class i2c_driver extends uvm_driver #(i2c_transaction);
        status = I2C_STATUS_OK;
        `uvm_info("DRV", "ACK Received", UVM_HIGH)
     end else begin
-       status = I2C_STATUS_ADDR_NACK; 
+       status = address_phase ? I2C_STATUS_ADDR_NACK : I2C_STATUS_DATA_NACK;
        `uvm_info("DRV", "NACK Received", UVM_HIGH)
     end
     
@@ -247,16 +367,16 @@ class i2c_driver extends uvm_driver #(i2c_transaction);
   // BIT BANGING HELPERS (SLAVE - Passive SCL Observe)
   // -----------------------------------------------------------------------
 
-  task slave_read_byte(output bit [7:0] data);
+  task slave_read_byte(output logic [7:0] data);
     vif.sda_drive <= 1'b1; // Release SDA to read
     vif.scl_drive <= 1'b1; // Ensure we don't drive SCL
     
     for(int i=7; i>=0; i--) begin
        // Wait for SCL Rising Edge (Sample point)
-       wait(vif.scl == 1); 
+       @(posedge vif.scl);
        data[i] = vif.sda;
        // Wait for SCL Falling Edge (Next bit setup)
-       wait(vif.scl == 0);
+       @(negedge vif.scl);
     end
   endtask
 
@@ -268,35 +388,46 @@ class i2c_driver extends uvm_driver #(i2c_transaction);
        vif.sda_drive <= data[i];
        
        // Wait for SCL Rising Edge (Master samples)
-       wait(vif.scl == 1);
+       @(posedge vif.scl);
        // Wait for SCL Falling Edge
-       wait(vif.scl == 0);
+       @(negedge vif.scl);
     end
     // Release SDA after last bit
     vif.sda_drive <= 1'b1;
   endtask
 
   task slave_send_ack();
+    bit acked;
+    slave_send_ack_result(acked);
+  endtask
+
+  task slave_send_ack_result(output bit acked);
     vif.scl_drive <= 1'b1; 
     
     // Drive ACK (Low)
     vif.sda_drive <= 1'b0;
     
     // Wait for Master to clock the ACK
-    wait(vif.scl == 1);
-    wait(vif.scl == 0);
+    @(posedge vif.scl);
+    acked = (vif.sda === 1'b0);
+    @(negedge vif.scl);
     
     // Release SDA
     vif.sda_drive <= 1'b1;
   endtask
 
   task slave_wait_ack_or_nack();
+    logic ack_bit;
+    slave_sample_ack(ack_bit);
+  endtask
+
+  task slave_sample_ack(output logic ack_bit);
     vif.scl_drive <= 1'b1;
     vif.sda_drive <= 1'b1; // Release SDA
     
-    wait(vif.scl == 1);
-    // Sample if needed: ack = vif.sda;
-    wait(vif.scl == 0);
+    @(posedge vif.scl);
+    ack_bit = vif.sda;
+    @(negedge vif.scl);
   endtask
 
 endclass

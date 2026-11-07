@@ -126,11 +126,15 @@ module i2c_master #(
          end
          
          ACK_ADDR: begin
-            run_rx_ack( (shift_reg[0]) ? DATA_RX : DATA_TX );
+            if (shift_reg[0]) begin
+               run_rx_ack(DATA_RX);
+            end else begin
+               run_rx_ack(DATA_TX);
+               if (phase == 3) shift_reg <= data_in;
+            end
          end
          
          DATA_TX: begin
-            shift_reg <= data_in; // Load data
             run_tx_byte(ACK_DATA_TX);
          end
          
