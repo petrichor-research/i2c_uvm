@@ -5,7 +5,7 @@
 A SystemVerilog UVM verification IP for the I2C protocol, packaged with two reference behavioral RTL models (master and slave) and a credit-aware slave variant. The repository is the source-of-truth for two manuscripts:
 
 1. **Deterministic Dual-Role I2C Verification** (IEEE Access, 2026): bus ownership invariants and mode-flip coverage for a dual-role master/slave VIP.
-2. **Receiver-Capacity Verification for I²C Endpoints** (IEEE Access revision, 2026): six Transmit-Budget Invariants, explicit-state evaluation of an executable accounting model, and a UVM source mapping with an explicit implementation boundary.
+2. **Byte-Lifecycle Contract and Observation Requirements for I²C Receiver-Capacity Verification** (IEEE Access revision, 2026): a conditional accounting contract, restricted-observation analysis, finite-specification checks, and a UVM source mapping with an explicit implementation boundary.
 
 Both papers reference paths inside this repository in their *Code and Data Availability* sections; the artifact map below mirrors those references so a reviewer can land on either side and navigate to the other.
 
@@ -63,7 +63,7 @@ The credit schedule is not a reported result: VCS is unavailable in the current 
 
 ## Reproducing the Credit-Based Flow Control Paper
 
-The revised manuscript, *Receiver-Capacity Verification for I²C Endpoints: Transmit-Budget Invariants and Explicit-State Evaluation*, reports an executable accounting model and a UVM source mapping. Its retained evidence consists of 11 unit tests, complete exploration of 628 normalized states and 1,636 legal transitions at matched depths one through eight, static source checks, isolated implementation tests, and an analytical status-read traffic calculation. The matched eight-entry model contains 173 states and 481 transitions. `python3 tests/credit_contract/run_all.py` reruns the directed RTL, extracted-method, and fake-process runner tests; its README describes the optional real-UVM type/elaboration check.
+The revised manuscript, *Byte-Lifecycle Contract and Observation Requirements for I²C Receiver-Capacity Verification*, reports an executable accounting model and a UVM source mapping. Its retained evidence consists of 11 unit tests, complete exploration of 628 normalized states and 1,636 legal transitions at matched depths one through eight, static source checks, isolated implementation tests, and an analytical status-read traffic calculation. The matched eight-entry model contains 173 states and 481 transitions. `python3 tests/credit_contract/run_all.py` reruns the directed RTL, extracted-method, and fake-process runner tests; its README describes the optional real-UVM type/elaboration check.
 
 Reproduce the reference-model outputs and all five manuscript figures from the repository root:
 
@@ -189,8 +189,8 @@ The historical `img/seaborn/generate_credit_plots.py` uses synthetic distributio
 }
 
 @article{i2c_credit_2026,
-  author  = {Liao, Yu-Cheng and Huang, Wei-Tzer and Lin, Wei-Chen},
-  title   = {Receiver-Capacity Verification for {I}\textsuperscript{2}{C} Endpoints: Transmit-Budget Invariants and Explicit-State Evaluation},
+  author  = {Liao, Yu-Cheng and Liao, Chin-Wen and Liu, Chang},
+  title   = {Byte-Lifecycle Contract and Observation Requirements for {I}\textsuperscript{2}{C} Receiver-Capacity Verification},
   journal = {IEEE Access},
   year    = {2026},
   note    = {submitted}
